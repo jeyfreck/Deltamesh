@@ -1,0 +1,18 @@
+databases:
+  - name: deltamesh-postgres
+    databaseName: deltamesh_db
+    user: dev_user
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: dev access (restrict before production)
+
+services:
+  - type: keyvalue
+    name: deltamesh-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: dev access (restrict before production)

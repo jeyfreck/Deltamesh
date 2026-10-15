@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package deltamesh.sync;
+
+message Hlc {
+  uint64 physical = 1;
+  uint32 logical = 2;
+  string node_id = 3;
+}
+
+message Mutation {
+  string id = 1;        // idempotency key
+  string entity_id = 2;
+  string field = 3;
+  string value = 4;     // JSON-encoded
+  Hlc hlc = 5;
+}
+
+message ClientMessage {
+  oneof payload {
+    MutationBatch push = 1;
+    PullRequest pull = 2;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    MutationBatch broadcast = 1;
+    Ack ack = 2;
+  }
+}
+
+message MutationBatch { repeated Mutation mutations = 1; }
+message PullRequest { Hlc since = 1; }
+message Ack { repeated string mutation_ids = 1; }
