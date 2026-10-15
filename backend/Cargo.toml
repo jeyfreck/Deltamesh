@@ -7,8 +7,8 @@ edition = "2021"
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 prost = "0.13"
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "migrate"] }
-redis = { version = "0.27", features = ["tokio-comp"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "migrate"] }
+redis = { version = "0.27", features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 futures-util = "0.3"
 dotenvy = "0.15"
 
