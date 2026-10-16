@@ -57,10 +57,9 @@ pub struct HybridClock {
 impl HybridClock {
     pub fn new(node_id: impl Into<String>) -> Self {
         let node_id = node_id.into();
-        let now = Self::system_time_ms();
         Self {
             latest: Timestamp {
-                wall_time: now,
+                wall_time: 0,
                 counter: 0,
                 node_id: node_id.clone(),
             },
@@ -122,3 +121,75 @@ impl HybridClock {
         &self.latest
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_local_events_monotonicity() {
+        let mut clock = HybridClock::new("node-alpha");
+        
+        // Simular dos eventos que ocurren dentro del mismo milisegundo físico
+        let ts1 = clock.send_with_time(1000);
+        let ts2 = clock.send_with_time(1000);
+
+        assert_eq!(ts1.wall_time, 1000);
+        assert_eq!(ts1.counter, 0);
+
+        assert_eq!(ts2.wall_time, 1000);
+        assert_eq!(ts2.counter, 1);
+        assert!(ts2 > ts1, "ts2 debe ser estrictamente mayor que ts1");
+    }
+
+    #[test]
+    fn test_physical_time_progress_resets_counter() {
+        let mut clock = HybridClock::new("node-alpha");
+
+        clock.send_with_time(1000);
+        clock.send_with_time(1000); // counter = 1
+
+        // El tiempo físico avanza
+        let ts3 = clock.send_with_time(1005);
+        assert_eq!(ts3.wall_time, 1005);
+        assert_eq!(ts3.counter, 0, "El contador debe reiniciarse cuando avanza el reloj físico");
+    }
+
+    #[test]
+    fn test_receive_remote_timestamp_from_future() {
+        let mut clock = HybridClock::new("node-local");
+
+        // Mensaje recibido desde un cliente con reloj físico adelantado
+        let remote_ts = Timestamp {
+            wall_time: 2000,
+            counter: 5,
+            node_id: "node-remote".to_string(),
+        };
+
+        // El reloj local está en 1500
+        let merged_ts = clock.receive_with_time(&remote_ts, 1500);
+
+        assert_eq!(merged_ts.wall_time, 2000);
+        assert_eq!(merged_ts.counter, 6, "Debe superar el contador del nodo remoto más adelantado");
+        assert!(merged_ts > remote_ts);
+    }
+
+    #[test]
+    fn test_deterministic_tie_breaker_by_node_id() {
+        let ts_a = Timestamp {
+            wall_time: 1000,
+            counter: 2,
+            node_id: "node-1".to_string(),
+        };
+
+        let ts_b = Timestamp {
+            wall_time: 1000,
+            counter: 2,
+            node_id: "node-2".to_string(),
+        };
+
+        // A igualdad de tiempo y contador, el orden alfabético de node_id desempata
+        assert!(ts_b > ts_a);
+    }
+}
+
