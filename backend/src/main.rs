@@ -27,7 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. PostgreSQL y Migraciones
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(50)
+        .acquire_timeout(std::time::Duration::from_secs(60))
         .connect(&database_url)
         .await?;
     println!("Conexión a PostgreSQL establecida.");
