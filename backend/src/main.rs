@@ -1,6 +1,7 @@
 mod proto;
 mod crdt;
 mod storage;
+mod server;
 
 use sqlx::postgres::PgPoolOptions;
 use std::env;
