@@ -1,38 +1,60 @@
-export interface Hlc {
-  physical: number;
-  logical: number;
+export interface HlcTimestamp {
+  wallTime: number;
+  counter: number;
   nodeId: string;
 }
 
-export class HlcClock {
-  private state: Hlc;
+export class ClientHlc {
+  private nodeId: string;
+  private wallTime: number;
+  private counter: number;
 
-  constructor(nodeId: string) {
-    this.state = { physical: Date.now(), logical: 0, nodeId };
+  constructor(nodeId?: string) {
+    this.nodeId = nodeId || `client-${Math.random().toString(36).substring(2, 9)}`;
+    this.wallTime = Date.now();
+    this.counter = 0;
   }
 
-  tick(): Hlc {
-    const now = Date.now();
-    if (now > this.state.physical) {
-      this.state = { ...this.state, physical: now, logical: 0 };
+  public getNodeId(): string {
+    return this.nodeId;
+  }
+
+  public now(): HlcTimestamp {
+    const phys = Date.now();
+    if (phys > this.wallTime) {
+      this.wallTime = phys;
+      this.counter = 0;
     } else {
-      this.state = { ...this.state, logical: this.state.logical + 1 };
+      this.counter += 1;
     }
-    return { ...this.state };
+    return {
+      wallTime: this.wallTime,
+      counter: this.counter,
+      nodeId: this.nodeId,
+    };
   }
 
-  recv(remote: Hlc): Hlc {
-    const now = Date.now();
-    const p = Math.max(now, this.state.physical, remote.physical);
-    let l = 0;
-    if (p === this.state.physical && p === remote.physical) l = Math.max(this.state.logical, remote.logical) + 1;
-    else if (p === this.state.physical) l = this.state.logical + 1;
-    else if (p === remote.physical) l = remote.logical + 1;
-    this.state = { ...this.state, physical: p, logical: l };
-    return { ...this.state };
+  public receive(remote: HlcTimestamp): HlcTimestamp {
+    const phys = Date.now();
+    const maxWall = Math.max(this.wallTime, remote.wallTime, phys);
+
+    if (maxWall === this.wallTime && maxWall === remote.wallTime) {
+      this.counter = Math.max(this.counter, remote.counter) + 1;
+    } else if (maxWall === this.wallTime) {
+      this.counter += 1;
+    } else if (maxWall === remote.wallTime) {
+      this.counter = remote.counter + 1;
+    } else {
+      this.counter = 0;
+    }
+
+    this.wallTime = maxWall;
+    return {
+      wallTime: this.wallTime,
+      counter: this.counter,
+      nodeId: this.nodeId,
+    };
   }
 }
 
-export function compareHlc(a: Hlc, b: Hlc): number {
-  return a.physical - b.physical || a.logical - b.logical || a.nodeId.localeCompare(b.nodeId);
-}
+export const localClock = new ClientHlc();
