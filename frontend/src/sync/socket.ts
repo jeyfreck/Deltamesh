@@ -3,11 +3,19 @@ export class ReconnectingSocket {
   private attempt = 0;
   private closed = false;
 
+  private url: string;
+  private onMessage: (data: ArrayBuffer) => void;
+  private onOpen?: () => void;
+
   constructor(
-    private url: string,
-    private onMessage: (data: ArrayBuffer) => void,
-    private onOpen?: () => void,
-  ) {}
+    url: string,
+    onMessage: (data: ArrayBuffer) => void,
+    onOpen?: () => void,
+  ) {
+    this.url = url;
+    this.onMessage = onMessage;
+    this.onOpen = onOpen;
+  }
 
   connect() {
     this.ws = new WebSocket(this.url);
