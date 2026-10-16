@@ -97,3 +97,109 @@ impl LwwEntity {
         self.fields.get(field_name).map(|f| f.value.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_concurrent_independent_fields_merge_cleanly() {
+        let mut task = LwwEntity::new("task-101", "task");
+
+        let ts_user_a = Timestamp {
+            wall_time: 1000,
+            counter: 0,
+            node_id: "user-a".to_string(),
+        };
+
+        let ts_user_b = Timestamp {
+            wall_time: 1002,
+            counter: 0,
+            node_id: "user-b".to_string(),
+        };
+
+        // Usuario A cambia el título
+        assert!(task.set_field("title".into(), "\"Diseñar arquitectura\"".into(), ts_user_a));
+        // Usuario B cambia el estado en paralelo
+        assert!(task.set_field("status".into(), "\"IN_PROGRESS\"".into(), ts_user_b));
+
+        // Ambos cambios deben coexistir sin pisarse
+        assert_eq!(task.get("title"), Some("\"Diseñar arquitectura\""));
+        assert_eq!(task.get("status"), Some("\"IN_PROGRESS\""));
+    }
+
+    #[test]
+    fn test_same_field_conflict_favors_higher_timestamp() {
+        let mut task = LwwEntity::new("task-102", "task");
+
+        let older_ts = Timestamp {
+            wall_time: 2000,
+            counter: 1,
+            node_id: "client-1".to_string(),
+        };
+
+        let newer_ts = Timestamp {
+            wall_time: 2000,
+            counter: 2,
+            node_id: "client-2".to_string(),
+        };
+
+        // Se aplica primero el cambio más reciente
+        assert!(task.set_field("status".into(), "\"DONE\"".into(), newer_ts));
+
+        // Llega con retraso por la red el cambio más viejo
+        let applied = task.set_field("status".into(), "\"TODO\"".into(), older_ts);
+
+        assert!(!applied, "La mutación vieja no debe sobreescribir la reciente");
+        assert_eq!(task.get("status"), Some("\"DONE\""));
+    }
+
+    #[test]
+    fn test_deterministic_tie_breaker_on_exact_collision() {
+        let mut task = LwwEntity::new("task-103", "task");
+
+        // Mismo wall_time y mismo counter; desempata node_id alfabéticamente
+        let ts_client_a = Timestamp {
+            wall_time: 3000,
+            counter: 0,
+            node_id: "client-a".to_string(),
+        };
+
+        let ts_client_z = Timestamp {
+            wall_time: 3000,
+            counter: 0,
+            node_id: "client-z".to_string(),
+        };
+
+        task.set_field("assignee".into(), "\"Alice\"".into(), ts_client_a);
+        let applied = task.set_field("assignee".into(), "\"Zoe\"".into(), ts_client_z);
+
+        assert!(applied, "client-z debe ganar a client-a en caso de colisión idéntica");
+        assert_eq!(task.get("assignee"), Some("\"Zoe\""));
+    }
+
+    #[test]
+    fn test_tombstone_deletion_masks_data() {
+        let mut task = LwwEntity::new("task-104", "task");
+
+        let create_ts = Timestamp {
+            wall_time: 4000,
+            counter: 0,
+            node_id: "node-1".to_string(),
+        };
+
+        let delete_ts = Timestamp {
+            wall_time: 4010,
+            counter: 0,
+            node_id: "node-1".to_string(),
+        };
+
+        task.set_field("title".into(), "\"Tarea a borrar\"".into(), create_ts);
+        assert_eq!(task.get("title"), Some("\"Tarea a borrar\""));
+
+        assert!(task.mark_deleted(delete_ts));
+        assert!(task.is_deleted);
+        assert_eq!(task.get("title"), None, "Una entidad eliminada no debe retornar campos");
+    }
+}
+
