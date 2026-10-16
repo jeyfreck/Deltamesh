@@ -1,5 +1,5 @@
-import Dexie, { Table } from 'dexie';
-import { HlcTimestamp } from '../sync/hlc';
+import Dexie, { type Table } from 'dexie';
+import type { HlcTimestamp } from '../sync/hlc';
 
 export type TaskStatus = 'todo' | 'in_progress' | 'done';
 
