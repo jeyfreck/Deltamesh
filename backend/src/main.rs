@@ -7,10 +7,11 @@ use axum::{routing::get, Router};
 use sqlx::postgres::PgPoolOptions;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 use server::ws::{ws_handler, AppState};
-use storage::postgres::PostgresStorage;
+use storage::{postgres::PostgresStorage, redis_pubsub::RedisBroadcaster};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,23 +22,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://dev_user:dev_password@localhost:5432/deltamesh_db".to_string());
 
+    let redis_url = env::var("REDIS_URL")
+        .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+
+    // 1. PostgreSQL y Migraciones
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&database_url)
         .await?;
-
     println!("Conexión a PostgreSQL establecida.");
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    println!("Migraciones SQL verificadas.");
 
-    println!("Migraciones ejecutadas exitosamente.");
+    // 2. Redis Pub/Sub y Broadcast local
+    let redis_client = redis::Client::open(redis_url)?;
+    let (broadcast_tx, _) = broadcast::channel(1024);
+    let broadcaster = RedisBroadcaster::new(redis_client, broadcast_tx).await?;
+    println!("Conexión a Redis Pub/Sub inicializada.");
 
-    let storage = Arc::new(PostgresStorage::new(pool));
-    let state = AppState { storage };
+    let state = AppState {
+        storage: Arc::new(PostgresStorage::new(pool)),
+        broadcaster: Arc::new(broadcaster),
+    };
 
-    // Configuración de rutas y middlewares
+    // 3. Servidor Web y WebSocket
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
