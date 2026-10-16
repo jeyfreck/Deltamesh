@@ -1,5 +1,6 @@
 mod proto;
 mod crdt;
+mod storage;
 
 use crdt::hlc::HybridClock;
 
