@@ -8,13 +8,14 @@ use axum::{
 use prost::Message as ProstMessage;
 use std::sync::Arc;
 use crate::{
-    proto::sync::{ClientSyncRequest, ServerSyncResponse},
-    storage::postgres::PostgresStorage,
+    proto::sync::{ClientSyncRequest, MutationOp, ServerSyncResponse},
+    storage::{postgres::{ApplyResult, PostgresStorage}, redis_pubsub::RedisBroadcaster},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<PostgresStorage>,
+    pub broadcaster: Arc<RedisBroadcaster>,
 }
 
 pub async fn ws_handler(
@@ -25,79 +26,95 @@ pub async fn ws_handler(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    println!("[WS] Nueva conexión entrante.");
+    println!("[WS] Nueva conexión activa.");
+    let mut rx_broadcast = state.broadcaster.subscribe();
 
-    while let Some(Ok(msg)) = socket.recv().await {
-        match msg {
-            Message::Binary(bin_data) => {
-                // Decodificación directa del buffer binario con prost
-                match ClientSyncRequest::decode(&bin_data[..]) {
-                    Ok(request) => {
-                        let response = process_sync_request(request, &state.storage).await;
+    loop {
+        tokio::select! {
+            // 1. Recepción de mensajes enviados por el cliente conectado
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Binary(bin_data))) => {
+                        if let Ok(request) = ClientSyncRequest::decode(&bin_data[..]) {
+                            let response = process_sync_request(
+                                request, 
+                                &state.storage, 
+                                &state.broadcaster
+                            ).await;
 
-                        let mut out_buffer = Vec::new();
-                        if let Err(e) = response.encode(&mut out_buffer) {
-                            eprintln!("[WS] Error al serializar ServerSyncResponse: {:?}", e);
-                            continue;
+                            let mut out_buffer = Vec::new();
+                            if response.encode(&mut out_buffer).is_ok() {
+                                if socket.send(Message::Binary(out_buffer)).await.is_err() {
+                                    break;
+                                }
+                            }
                         }
-
-                        if socket.send(Message::Binary(out_buffer)).await.is_err() {
-                            eprintln!("[WS] Cliente desconectado abruptamente durante el envío.");
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[WS] Paquete Protobuf inválido o corrupto: {:?}", e);
+                    Some(Ok(Message::Close(_))) | None => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            // 2. Retransmisión de deltas generados por otros clientes en tiempo real
+            broadcast_msg = rx_broadcast.recv() => {
+                if let Ok(mutation) = broadcast_msg {
+                    let update_response = ServerSyncResponse {
+                        acknowledged_mutation_ids: Vec::new(),
+                        applied_deltas: vec![mutation],
+                    };
+
+                    let mut out_buffer = Vec::new();
+                    if update_response.encode(&mut out_buffer).is_ok() {
+                        if socket.send(Message::Binary(out_buffer)).await.is_err() {
+                            break;
+                        }
                     }
                 }
-            }
-            Message::Close(_) => {
-                println!("[WS] El cliente cerró la sesión.");
-                break;
-            }
-            Message::Ping(payload) => {
-                if socket.send(Message::Pong(payload)).await.is_err() {
-                    break;
-                }
-            }
-            _ => {
-                // Ignorar tramas de texto; el protocolo opera exclusivamente en binario
             }
         }
     }
 
-    println!("[WS] Sesión terminada.");
+    println!("[WS] Conexión cerrada.");
 }
 
 async fn process_sync_request(
     request: ClientSyncRequest,
     storage: &PostgresStorage,
+    broadcaster: &RedisBroadcaster,
 ) -> ServerSyncResponse {
     let mut acked_ids = Vec::with_capacity(request.pending_mutations.len());
 
     for mutation in request.pending_mutations {
         let mutation_id = mutation.mutation_id.clone();
-        
+
         match storage.apply_mutation(&mutation).await {
-            Ok(result) => {
-                // La mutación se confirma tanto si aplicó cambios nuevos como si ya era idempotente
+            Ok(ApplyResult::Applied { fields_updated }) => {
                 acked_ids.push(mutation_id);
-                println!(
-                    "[Sync] Mutación {:?} confirmada. Resultado: {:?}",
-                    mutation.mutation_id, result
-                );
+                
+                // Si la mutación ganó campos y alteró el estado, se propaga por Redis
+                if fields_updated > 0 {
+                    let _ = broadcaster.publish_delta(&mutation).await;
+                }
+            }
+            Ok(ApplyResult::AlreadyProcessed) => {
+                // Si ya fue procesada, confirmamos recepción pero no retransmitimos
+                acked_ids.push(mutation_id);
             }
             Err(e) => {
-                eprintln!(
-                    "[Sync] Error procesando mutación {:?}: {:?}",
-                    mutation_id, e
-                );
+                eprintln!("[Sync] Error aplicando mutación {:?}: {:?}", mutation_id, e);
             }
         }
     }
 
     ServerSyncResponse {
         acknowledged_mutation_ids: acked_ids,
-        applied_deltas: Vec::new(), // Se poblará con Redis Pub/Sub en la siguiente fase
+        applied_deltas: Vec::new(),
     }
 }
