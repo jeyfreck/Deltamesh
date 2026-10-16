@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc && vite build",
+    "proto:generate": "pbjs -t static-module -w es6 -o src/proto/sync.js ../proto/sync.proto && pbts -o src/proto/sync.d.ts src/proto/sync.js",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -27,6 +28,7 @@
     "autoprefixer": "^10.6.1",
     "oxlint": "^1.81.0",
     "postcss": "^8.5.30",
+    "protobufjs-cli": "^2.7.1",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
