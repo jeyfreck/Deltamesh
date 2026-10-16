@@ -8,7 +8,7 @@ use axum::{
 use prost::Message as ProstMessage;
 use std::sync::Arc;
 use crate::{
-    proto::sync::{ClientSyncRequest, MutationOp, ServerSyncResponse},
+    proto::sync::{ClientSyncRequest, ServerSyncResponse},
     storage::{postgres::{ApplyResult, PostgresStorage}, redis_pubsub::RedisBroadcaster},
 };
 

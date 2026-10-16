@@ -2,7 +2,6 @@ use futures_util::StreamExt;
 use prost::Message as ProstMessage;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
-use std::sync::Arc;
 use tokio::sync::broadcast;
 use crate::proto::sync::MutationOp;
 
