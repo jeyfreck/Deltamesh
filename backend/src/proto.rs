@@ -1,2 +1,3 @@
-#![allow(dead_code)]
-include!(concat!(env!("OUT_DIR"), "/deltamesh.sync.rs"));
+pub mod sync {
+    include!(concat!(env!("OUT_DIR"), "/sync.rs"));
+}

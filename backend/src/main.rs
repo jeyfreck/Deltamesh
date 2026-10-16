@@ -1,14 +1,21 @@
-mod config;
-mod crdt;
 mod proto;
-mod server;
-mod storage;
+
+use proto::sync::{ClientSyncRequest, MutationOp, HlcTimestamp};
 
 #[tokio::main]
 async fn main() {
-    let cfg = config::Config::from_env();
-    let app = server::router();
-    let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await.unwrap();
-    println!("DeltaMesh listening on {}", cfg.bind_addr);
-    axum::serve(listener, app).await.unwrap();
+    println!("Deltamesh backend inicializado.");
+    
+    // Verificación de tipos generados
+    let dummy_request = ClientSyncRequest {
+        client_id: "client-test-1".to_string(),
+        pending_mutations: vec![],
+        last_synced_timestamp: Some(HlcTimestamp {
+            wall_time: 1717000000000,
+            counter: 0,
+            node_id: "node-a".to_string(),
+        }),
+    };
+
+    println!("Estructura protobuf enlazada: {:?}", dummy_request.client_id);
 }

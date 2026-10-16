@@ -1,35 +1,46 @@
 syntax = "proto3";
 
-package deltamesh.sync;
+package sync;
 
-message Hlc {
-  uint64 physical = 1;
-  uint32 logical = 2;
-  string node_id = 3;
+enum OperationType {
+  INSERT = 0;
+  UPDATE = 1;
+  DELETE = 2;
 }
 
-message Mutation {
-  string id = 1;        // idempotency key
-  string entity_id = 2;
-  string field = 3;
-  string value = 4;     // JSON-encoded
-  Hlc hlc = 5;
+// Reloj Lógico Híbrido (HLC) para ordenamiento determinista
+message HlcTimestamp {
+  uint64 wall_time = 1; // Milisegundos Unix físicos
+  uint32 counter = 2;   // Contador lógico para desempates en el mismo milisegundo
+  string node_id = 3;   // Identificador del cliente o réplica
 }
 
-message ClientMessage {
-  oneof payload {
-    MutationBatch push = 1;
-    PullRequest pull = 2;
-  }
+// Mutación a nivel de atributo para granularidad fina en CRDTs
+message FieldMutation {
+  string field_name = 1;
+  string value_json = 2; 
+  HlcTimestamp timestamp = 3;
 }
 
-message ServerMessage {
-  oneof payload {
-    MutationBatch broadcast = 1;
-    Ack ack = 2;
-  }
+// Representación de una mutación individual en la cola
+message MutationOp {
+  string mutation_id = 1; // UUIDv4 idempotente generado por el cliente
+  string entity_id = 2;   // ID del recurso (ej: tarea kanban)
+  string entity_type = 3; // "task", "column", "workspace"
+  OperationType op_type = 4;
+  repeated FieldMutation fields = 5;
+  HlcTimestamp timestamp = 6;
 }
 
-message MutationBatch { repeated Mutation mutations = 1; }
-message PullRequest { Hlc since = 1; }
-message Ack { repeated string mutation_ids = 1; }
+// Paquete de sincronización que despacha el cliente al reconectarse
+message ClientSyncRequest {
+  string client_id = 1;
+  repeated MutationOp pending_mutations = 2;
+  HlcTimestamp last_synced_timestamp = 3;
+}
+
+// Confirmación y difusión de deltas enviada por el servidor
+message ServerSyncResponse {
+  repeated string acknowledged_mutation_ids = 1;
+  repeated MutationOp applied_deltas = 2;
+}
