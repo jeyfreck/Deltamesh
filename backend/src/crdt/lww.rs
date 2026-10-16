@@ -1,14 +1,14 @@
-use super::hlc::Hlc;
+use super::hlc::Timestamp;
 
 /// Last-Write-Wins register.
 #[derive(Debug, Clone)]
 pub struct Lww<T> {
     pub value: T,
-    pub hlc: Hlc,
+    pub hlc: Timestamp,
 }
 
 impl<T: Clone> Lww<T> {
-    pub fn new(value: T, hlc: Hlc) -> Self {
+    pub fn new(value: T, hlc: Timestamp) -> Self {
         Self { value, hlc }
     }
 

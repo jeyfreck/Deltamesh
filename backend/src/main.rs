@@ -1,6 +1,8 @@
+mod crdt;
 mod proto;
 
-use proto::sync::{ClientSyncRequest, MutationOp, HlcTimestamp};
+use crdt::hlc::HybridClock;
+use proto::sync::{ClientSyncRequest, HlcTimestamp};
 
 #[tokio::main]
 async fn main() {
@@ -18,4 +20,9 @@ async fn main() {
     };
 
     println!("Estructura protobuf enlazada: {:?}", dummy_request.client_id);
+
+    // Verificación del reloj HLC
+    let mut clock = HybridClock::new("node-server-1");
+    let ts1 = clock.send();
+    println!("HLC local generado: {:?}", ts1);
 }
