@@ -31,6 +31,24 @@ impl RedisBroadcaster {
         Ok(Self { conn, broadcast_tx })
     }
 
+    pub fn get_workspace_channel(workspace_id: &str) -> String {
+        format!("deltamesh:workspace:{}:deltas", workspace_id)
+    }
+
+    pub async fn publish_delta_to_workspace(
+        &self,
+        workspace_id: &str,
+        mutation: &MutationOp,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut buffer = Vec::new();
+        mutation.encode(&mut buffer)?;
+
+        let channel = Self::get_workspace_channel(workspace_id);
+        let mut conn = self.conn.clone();
+        conn.publish::<_, _, ()>(channel, buffer).await?;
+        Ok(())
+    }
+
     /// Publica un delta confirmado en Redis serializado en Protobuf
     pub async fn publish_delta(&self, mutation: &MutationOp) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut buffer = Vec::new();
