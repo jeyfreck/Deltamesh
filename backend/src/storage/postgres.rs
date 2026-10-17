@@ -142,4 +142,19 @@ impl PostgresStorage {
 
         Ok(snapshot_deltas)
     }
+
+    /// Elimina registros de idempotencia que superen los días de retención
+    pub async fn purge_expired_mutations(&self, retention_days: i64) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM processed_mutations
+            WHERE applied_at < NOW() - ($1 * INTERVAL '1 day')
+            "#,
+            retention_days as f64
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
 }

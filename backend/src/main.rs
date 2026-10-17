@@ -42,8 +42,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broadcaster = RedisBroadcaster::new(redis_client, broadcast_tx).await?;
     println!("Conexión a Redis Pub/Sub inicializada.");
 
+    let storage = Arc::new(PostgresStorage::new(pool));
+    let storage_for_gc = Arc::clone(&storage);
+
+    // Worker de mantenimiento asíncrono
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60 * 24)); // Cada 24 horas
+        let retention_days = 14;
+
+        loop {
+            interval.tick().await;
+            match storage_for_gc.purge_expired_mutations(retention_days).await {
+                Ok(rows) => {
+                    println!("[GC Worker] Limpieza de idempotencia: {} mutaciones antiguas purgadas.", rows);
+                }
+                Err(e) => {
+                    eprintln!("[GC Worker] Error durante la recolección de basura: {:?}", e);
+                }
+            }
+        }
+    });
+
     let state = AppState {
-        storage: Arc::new(PostgresStorage::new(pool)),
+        storage,
         broadcaster: Arc::new(broadcaster),
     };
 
