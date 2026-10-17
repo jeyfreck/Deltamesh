@@ -26,10 +26,11 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres",
 redis = { version = "0.27", features = ["tokio-comp", "aio", "connection-manager", "tls-rustls", "tokio-rustls-comp"] }
 dotenvy = "0.15"
 
-# Utilidades
+# Utilidades y Autenticación
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+jsonwebtoken = "9.3"
 
 [dev-dependencies]
 rand = "0.8"
