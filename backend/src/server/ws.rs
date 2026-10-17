@@ -9,6 +9,7 @@ use prost::Message as ProstMessage;
 use std::sync::Arc;
 use crate::{
     proto::sync::{ClientSyncRequest, ServerSyncResponse},
+    server::auth::AuthenticatedSession,
     storage::{postgres::{ApplyResult, PostgresStorage}, redis_pubsub::RedisBroadcaster},
 };
 
@@ -19,14 +20,33 @@ pub struct AppState {
 }
 
 pub async fn ws_handler(
+    session: AuthenticatedSession,
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, session))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    println!("[WS] Nueva conexión activa.");
+async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthenticatedSession) {
+    println!(
+        "[WS] Sesión iniciada: Usuario {} en Workspace {}",
+        session.user_id, session.workspace_id
+    );
+
+    // 1. Envío de Snapshot inicial de compactación
+    if let Ok(snapshot_deltas) = state.storage.fetch_workspace_snapshot().await {
+        if !snapshot_deltas.is_empty() {
+            let snapshot_res = ServerSyncResponse {
+                acknowledged_mutation_ids: Vec::new(),
+                applied_deltas: snapshot_deltas,
+            };
+            let mut out_buffer = Vec::new();
+            if snapshot_res.encode(&mut out_buffer).is_ok() {
+                let _ = socket.send(Message::Binary(out_buffer)).await;
+            }
+        }
+    }
+
     let mut rx_broadcast = state.broadcaster.subscribe();
 
     loop {
@@ -39,7 +59,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             let response = process_sync_request(
                                 request, 
                                 &state.storage, 
-                                &state.broadcaster
+                                &state.broadcaster,
+                                &session.workspace_id,
                             ).await;
 
                             let mut out_buffer = Vec::new();
@@ -88,6 +109,7 @@ async fn process_sync_request(
     request: ClientSyncRequest,
     storage: &PostgresStorage,
     broadcaster: &RedisBroadcaster,
+    workspace_id: &str,
 ) -> ServerSyncResponse {
     let mut acked_ids = Vec::with_capacity(request.pending_mutations.len());
 
@@ -100,6 +122,7 @@ async fn process_sync_request(
                 
                 // Si la mutación ganó campos y alteró el estado, se propaga por Redis
                 if fields_updated > 0 {
+                    let _ = broadcaster.publish_delta_to_workspace(workspace_id, &mutation).await;
                     let _ = broadcaster.publish_delta(&mutation).await;
                 }
             }
