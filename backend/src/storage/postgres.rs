@@ -1,6 +1,6 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
-use crate::proto::sync::MutationOp;
+use crate::proto::sync::{FieldMutation, HlcTimestamp, MutationOp, OperationType};
 
 #[derive(Debug)]
 pub enum ApplyResult {
@@ -94,5 +94,52 @@ impl PostgresStorage {
 
         tx.commit().await?;
         Ok(ApplyResult::Applied { fields_updated: updated_count })
+    }
+
+    /// Lee el estado consolidado de todas las entidades activas para sincronizar clientes nuevos
+    pub async fn fetch_workspace_snapshot(&self) -> Result<Vec<MutationOp>, sqlx::Error> {
+        // Obtenemos el registro más reciente por cada campo individual
+        let records = sqlx::query!(
+            r#"
+            SELECT entity_id, entity_type, field_name, field_value, wall_time, counter, node_id
+            FROM entity_fields
+            ORDER BY entity_id
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Agrupamos campos por entidad para reconstruir mutaciones consolidadas
+        let mut grouped: std::collections::HashMap<String, (String, Vec<FieldMutation>)> = std::collections::HashMap::new();
+
+        for row in records {
+            let entry = grouped
+                .entry(row.entity_id.clone())
+                .or_insert_with(|| (row.entity_type.clone(), Vec::new()));
+
+            entry.1.push(FieldMutation {
+                field_name: row.field_name,
+                value_json: row.field_value,
+                timestamp: Some(HlcTimestamp {
+                    wall_time: row.wall_time as u64,
+                    counter: row.counter as u32,
+                    node_id: row.node_id,
+                }),
+            });
+        }
+
+        let mut snapshot_deltas = Vec::new();
+        for (entity_id, (entity_type, fields)) in grouped {
+            snapshot_deltas.push(MutationOp {
+                mutation_id: format!("snapshot-{}", entity_id),
+                entity_id,
+                entity_type,
+                op_type: OperationType::Update as i32,
+                fields,
+                timestamp: None,
+            });
+        }
+
+        Ok(snapshot_deltas)
     }
 }
