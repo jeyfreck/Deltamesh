@@ -73,30 +73,148 @@ DeltaMesh completely decouples UI responsiveness from network availability:
 
 ## System Architecture
 
+DeltaMesh is designed as a distributed, multi-tiered architecture that cleanly decouples optimistic client-side execution from server-side atomic validation, state compaction, and real-time delta fanout.
+
+### High-Level Topology & Data Flow
+
 ```mermaid
-graph TD
-    subgraph Browser Client (Local-First)
-        UI[React Kanban UI] -->|0ms Reactive Query| Dexie[(IndexedDB: Dexie)]
-        UI -->|Generate Event| HLC_C[Client HLC]
-        UI -->|Enqueue| Q[Mutation Queue]
-        Q -->|Flush Protobuf Frame| WS_C[Sync Engine WebSocket]
-    end
-
-    WS_C <==>|Binary WebSocket (Protobuf)| WS_S[Axum WebSocket Handler]
-
-    subgraph Backend Infrastructure (Rust)
-        WS_S -->|Verify JWT| Auth[JWT Extractor]
-        WS_S -->|Cold-Start Sync| Snap[State Snapshot Engine]
-        WS_S -->|Apply Mutation| PG_Store[PostgreSQL Storage]
+flowchart TB
+    %% =========================================================================
+    %% TIER 1: CLIENT TIER
+    %% =========================================================================
+    subgraph ClientTier["CLIENT TIER: Local-First Browser Node"]
+        direction TB
+        UI["React 18 Kanban UI<br/><i>(Declarative Optimistic Rendering)</i>"]
         
-        subgraph PostgreSQL
-            PG_Store -->|Atomic Check| PM[(processed_mutations)]
-            PG_Store -->|LWW Conditional Upsert| EF[(entity_fields)]
+        subgraph LocalEngine["Local Storage & Monotonic Clock Engine"]
+            DexieDB[("IndexedDB via Dexie<br/>• tasks (live state)<br/>• mutation_queue (persistent outbox)")]
+            HLC_Client["Client Hybrid Logical Clock<br/><i>HLC Monotonic Generator</i>"]
+            SyncEngine["SyncEngine Engine<br/>• Exponential Backoff & Jitter<br/>• Protobuf Encoder / Decoder"]
         end
 
-        PG_Store -->|On Winning Delta| R_Pub[RedisBroadcaster]
-        R_Pub -->|Publish Delta to Workspace Channel| Redis[(Redis Pub/Sub)]
-        Redis -->|Fanout Deltas| WS_S
+        UI <-->|"useLiveQuery (0ms Reaction)"| DexieDB
+        UI -->|"1. User Action"| HLC_Client
+        HLC_Client -->|"2. Timestamped MutationOp"| DexieDB
+        DexieDB -->|"3. Enqueue Pending Ops"| SyncEngine
+    end
+
+    %% =========================================================================
+    %% TIER 2: TRANSPORT & GATEWAY TIER
+    %% =========================================================================
+    subgraph TransportTier["TRANSPORT & EDGE GATEWAY TIER"]
+        direction TB
+        WS_Conn["Duplex Binary WebSocket Stream<br/><code>ws://host:3000/ws</code>"]
+        AuthExtractor["Handshake Auth & Session Extractor<br/>• Query: ?token=JWT<br/>• Header: Bearer JWT<br/>• HMAC-SHA256 Verification"]
+    end
+
+    SyncEngine <==>|"Binary Protobuf Frame<br/>(ClientSyncRequest / ServerSyncResponse)"| WS_Conn
+    WS_Conn <-->|"HTTP 101 Handshake Validation"| AuthExtractor
+
+    %% =========================================================================
+    %% TIER 3: BACKEND APPLICATION RUNTIME
+    %% =========================================================================
+    subgraph BackendTier["BACKEND APPLICATION RUNTIME: Rust Axum & Tokio"]
+        direction TB
+        WS_Handler["Axum WebSocket Multiplexer<br/><code>ws_handler / handle_socket</code>"]
+        
+        subgraph CoreSubsystems["Core Synchronization Subsystems"]
+            SnapshotEng["Snapshot Compaction Engine<br/><code>fetch_workspace_snapshot()</code>"]
+            CRDT_Core["CRDT LWW Resolver Kernel<br/><code>apply_mutation / LwwEntity</code>"]
+            GC_Worker["Tokio Background GC Worker<br/><code>purge_expired_mutations (24h loop)</code>"]
+            RedisBroadcaster["RedisBroadcaster Engine<br/><code>deltamesh:workspace:{id}:deltas</code>"]
+        end
+
+        AuthExtractor -->|"AuthenticatedSession(sub, workspace_id)"| WS_Handler
+        WS_Handler -->|"Cold-Start Snapshot Request"| SnapshotEng
+        WS_Handler -->|"Incoming Mutation Stream"| CRDT_Core
+        WS_Handler <-->|"Workspace Broadcast Subscriber"| RedisBroadcaster
+    end
+
+    %% =========================================================================
+    %% TIER 4: STORAGE & PERSISTENCE TIER
+    %% =========================================================================
+    subgraph StorageTier["STORAGE & DISTRIBUTED EVENT TIER"]
+        direction TB
+        subgraph PostgresCluster["PostgreSQL 16 Engine"]
+            PM_Table[("processed_mutations<br/>• mutation_id (UUID PK)<br/>• applied_at (Indexed for GC)")]
+            EF_Table[("entity_fields<br/>• (entity_id, field_name) PK<br/>• wall_time, counter, node_id<br/>• field_value (JSON payload)")]
+        end
+
+        subgraph RedisCluster["Redis Distributed Bus"]
+            RedisPubSub[("Redis Pub/Sub Engine<br/>Multi-Replica Cross-Node Fanout")]
+        end
+    end
+
+    CRDT_Core -->|"Atomic Tx Step 1: Idempotency Check"| PM_Table
+    CRDT_Core -->|"Atomic Tx Step 2: Conditional LWW Upsert"| EF_Table
+    SnapshotEng -->|"Consolidate Active Fields"| EF_Table
+    GC_Worker -->|"Purge Records (>14 Days)"| PM_Table
+    CRDT_Core -->|"Publish Confirmed Delta"| RedisBroadcaster
+    RedisBroadcaster <==>|"Publish / Subscribe"| RedisPubSub
+
+    %% =========================================================================
+    %% STYLING
+    %% =========================================================================
+    classDef clientStyle fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef transportStyle fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef backendStyle fill:#18181b,stroke:#a855f7,stroke-width:2px,color:#f8fafc;
+    classDef storageStyle fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef redisStyle fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#f8fafc;
+
+    class UI,DexieDB,HLC_Client,SyncEngine clientStyle;
+    class WS_Conn,AuthExtractor transportStyle;
+    class WS_Handler,SnapshotEng,CRDT_Core,GC_Worker,RedisBroadcaster backendStyle;
+    class PM_Table,EF_Table storageStyle;
+    class RedisPubSub redisStyle;
+```
+
+### End-to-End Synchronization Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User / Client
+    participant UI as React UI & Dexie
+    participant WS as WebSocket Engine
+    participant Server as Axum Server (Rust)
+    participant PG as PostgreSQL 16
+    participant Redis as Redis Pub/Sub
+    actor Peer as Remote Collaborator
+
+    %% Phase 1: Authentication & Cold Start
+    rect rgb(25, 30, 45)
+        Note over User, Server: Phase 1: Authentication & Cold-Start State Hydration
+        User->>WS: Connect ws://host:3000/ws?token=JWT
+        WS->>Server: HTTP 101 Upgrade Request
+        Server->>Server: Validate HMAC-SHA256 & Extract Claims(workspace_id)
+        Server->>PG: fetch_workspace_snapshot()
+        PG-->>Server: Return consolidated entity_fields
+        Server-->>WS: Binary ServerSyncResponse (Compacted Snapshot)
+        WS->>UI: Hydrate Dexie tables (Instant 0ms cold-start view)
+    end
+
+    %% Phase 2: Optimistic Mutation & Delta Propagation
+    rect rgb(20, 35, 30)
+        Note over User, Peer: Phase 2: Optimistic Mutation & Distributed Broadcast
+        User->>UI: Mutate Entity (e.g. Move Task to 'Done')
+        UI->>UI: Generate Monotonic Timestamp (wall_time, counter, node_id)
+        UI->>UI: Commit to Local Dexie DB (0ms visual latency)
+        UI->>WS: Enqueue & Dispatch ClientSyncRequest (Protobuf)
+        WS->>Server: Stream Binary Frame
+        
+        Server->>PG: BEGIN Transaction
+        Server->>PG: INSERT INTO processed_mutations ON CONFLICT DO NOTHING
+        alt Already Processed (Idempotent Duplicate)
+            Server->>PG: ROLLBACK
+            Server-->>WS: ACK (No-op)
+        else Fresh Winning Mutation
+            Server->>PG: UPDATE entity_fields WHERE incoming_hlc > current_hlc
+            Server->>PG: COMMIT
+            Server-->>WS: ServerSyncResponse ACK
+            Server->>Redis: publish_delta_to_workspace(workspace_id, delta)
+            Redis-->>Peer: Broadcast Delta to Workspace Subscribers
+            Peer->>Peer: LWW Merge into local Dexie (Live Reactive UI Update)
+        end
     end
 ```
 
